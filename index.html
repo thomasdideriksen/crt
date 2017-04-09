@@ -23,15 +23,16 @@
             uniform sampler2D Texture;
             uniform sampler2D Aperture;
             varying vec2 TexCoord;
-            uniform vec4 distCoeffs;
+            uniform vec4 DistortionCoeffs;
             uniform bool Bypass;
             uniform float Time;
+            uniform vec3 ColorFringing;
             
             vec2 distort(float dx, float dy, float dist, float k1, float k2, float k3, float scale) {
                 float dist2 = dist * dist;
                 float dist4 = dist2 * dist2;
                 float dist6 = dist4 * dist2;
-                float coeff = (1.0 + k1 * dist2 + k2 * dist4 + k3 * dist6) * scale;
+                float coeff = (1.0 + k1 * dist2 + k2 * dist4 + k3 * dist6) * (1.0 / scale);
                 return vec2(dx * coeff + 0.5, dy * coeff + 0.5);
             }
            
@@ -48,19 +49,19 @@
                 float dist = sqrt(dx * dx + dy * dy);
                 
                 // Get distortion coefficients + scale
-                float k1 = distCoeffs.x;
-                float k2 = distCoeffs.y;
-                float k3 = distCoeffs.z;
-                float scale = distCoeffs.w;
+                float k1 = DistortionCoeffs.x;
+                float k2 = DistortionCoeffs.y;
+                float k3 = DistortionCoeffs.z;
+                float scale = DistortionCoeffs.w;
                 
                 // Sample R, G and B in different locations to simulate color-fringing near the edges
-                vec2 uvR = distort(dx, dy, dist, k1 + 0.08 * dist, k2, k3, scale);
+                vec2 uvR = distort(dx, dy, dist, k1 + ColorFringing.r * dist, k2, k3, scale);
                 vec4 imR = texture2D(Texture, uvR);
                 
-                vec2 uvG = distort(dx, dy, dist, k1, k2, k3, scale);
+                vec2 uvG = distort(dx, dy, dist, k1 + ColorFringing.g * dist, k2, k3, scale);
                 vec4 imG = texture2D(Texture, uvG);
                 
-                vec2 uvB = distort(dx, dy, dist, k1 - 0.05 * dist, k2, k3, scale);
+                vec2 uvB = distort(dx, dy, dist, k1 + ColorFringing.b * dist, k2, k3, scale);
                 vec4 imB = texture2D(Texture, uvB);
                 
                 // Combine the three image samples
@@ -99,9 +100,10 @@
             
             
                 _params = {
-                    distortionPrimary: 0.19,
-                    distortionSecondary: 0.11,
-                    distortionScale: 0.91,
+                
+                    distortionPrimary: 0.18,
+                    distortionSecondary: 0.195,
+                    distortionScale: 1.06,
                     
                     shadowMaskAlpha: 0.35,
                     shadowMaskScale: 10.0,
@@ -112,16 +114,14 @@
                     colorFringingRed: 0.08,
                     colorFringingBlue: -0.05,
                     
-                    flickerDelay: 32.080362, 
-                    flickerOffset: 0.08,
+                    flickerFrequency: 29.9234, 
+                    flickerStrength: 0.0907,
                 }
-            
-                _cvs = document.getElementById('canvas');
-                console.log(_cvs);
-                console.log(_cvs.getContext);
                 
+                updateUI();
+            
+                _cvs = document.getElementById('canvas');                
                 _gl = _cvs.getContext('webgl');
-                console.log(_gl);
                 
                 var gl = _gl;
                 gl.clearColor(0, 0, 0, 1);
@@ -168,15 +168,16 @@
                     video.src = 'media/shocktr2.mp4';
                 }
                 im.src = 'graphics/aperture.png';
-                
-                // Default distortion values
-                var k1 = 0.19;
-                var k2 = 0.11;
-                var k3 = 0;
-                var scale = 0.91;
-                var idx = 0;
-                var delta = 0.01;
-                _program.setUniform4f('distCoeffs', k1, k2, k3, scale);               
+            }
+            
+            function updateUI() {
+                var elements = document.getElementsByTagName('input');
+                for (var i = 0; i < elements.length; i++) {
+                    var el = elements[i];
+                    if (el.id in _params) {
+                        el.value = _params[el.id];
+                    }
+                }
             }
             
             function createEmptyTexture() {
@@ -278,8 +279,8 @@
                 
                 _frame++;
                 var t = _frame * (1.0 / 60.0) * 1000.0;
-                var delay = _params.flickerDelay;
-                var offset = _params.flickerOffset;
+                var delay = (1.0 / _params.flickerFrequency) * 1000.0;
+                var offset = _params.flickerStrength;
                 var dt = t - (Math.floor(t / delay) * delay)
                 dt /= delay;
                 
@@ -287,6 +288,9 @@
                 dt += (1.0 - offset);
                 
                 _program.setUniform1f('Time', dt);
+                
+                _program.setUniform4f('DistortionCoeffs', _params.distortionPrimary, _params.distortionSecondary, 0.0, _params.distortionScale);
+                _program.setUniform3f('ColorFringing', _params.colorFringingRed, 0.0, _params.colorFringingBlue);
                 
                 gl.activeTexture(gl.TEXTURE1);
                 gl.bindTexture(gl.TEXTURE_2D, _apertureTex);
@@ -317,12 +321,32 @@
                 }
             }
             
-            function paramFlickerOffset(e) {
-                _params.flickerOffset = parseFloat(e.value);
+            function paramFlickerStrength(e) {
+                _params.flickerStrength = parseFloat(e.value);
             }
             
             function paramFlickerFrequency(e) {
-                _params.flickerDelay = parseFloat(e.value);
+                _params.flickerFrequency = parseFloat(e.value);
+            }
+            
+            function paramDistortionPrimary(e) {
+                _params.distortionPrimary = parseFloat(e.value);
+            }
+            
+            function paramDistortionSecondary(e) {
+                _params.distortionSecondary = parseFloat(e.value);
+            }
+            
+            function paramDistortionScale(e) {
+                _params.distortionScale = parseFloat(e.value);
+            }
+            
+            function paramColorFringingRed(e) {
+                _params.colorFringingRed = parseFloat(e.value);
+            }
+            
+            function paramColorFringingBlue(e) {
+                _params.colorFringingBlue = parseFloat(e.value);
             }
         
         </script>
@@ -390,18 +414,18 @@
                     
                     <tr>
                         <td>Primary</td>
-                        <td><input type='range' oninput='paramDistortionPrimary(this)'></input></td>
+                        <td><input type='range' min='0.0' max='1.0' step='0.01' id='distortionPrimary' oninput='paramDistortionPrimary(this)'></input></td>
                     </tr>
                     <tr>
                         <td>Secondary</td>
-                        <td><input type='range' oninput='paramDistortionSecondary(this)'></input></td>
+                        <td><input type='range' min='0.0' max='1.0' step='0.01' id='distortionSecondary' oninput='paramDistortionSecondary(this)'></input></td>
                     </tr>
                     <tr>
                         <td>Scale</td>
-                        <td><input type='range' oninput='paramDistortionScale(this)'></input></td>
+                        <td><input type='range' min='0.5' max='2.0' step='0.01' id='distortionScale' oninput='paramDistortionScale(this)'></input></td>
                     </tr>
                     
-                    <tr><td colspan='2'><div class='separator'></div></td></tr>                    
+                    <tr><td colspan='2'><div class='separator'></div></td></tr>
                     <tr><td colspan='2'><div class='groupHeader'>Shadow Mask</div></td></tr>
                     
                     <tr>
@@ -433,12 +457,12 @@
                     
                      <tr>
                         <td>Red Channel</td>
-                        <td><input type='range' oninput='paramFringingRed(this)'></input></td>
+                        <td><input type='range' min='-0.4' max='0.4' step='0.001' id='colorFringingRed' oninput='paramColorFringingRed(this)'></input></td>
                     </tr>
                     
                     <tr>
                         <td>Blue Channel</td>
-                        <td><input type='range' oninput='paramFringingBlue(this)'></input></td>
+                        <td><input type='range' min='-0.4' max='0.4' step='0.001' id='colorFringingBlue' oninput='paramColorFringingBlue(this)'></input></td>
                     </tr>
                     
                     <tr><td colspan='2'><div class='separator'></div></td></tr>
@@ -446,12 +470,12 @@
                     
                     <tr>
                         <td>Frequency</td>
-                        <td><input type='range' min='2.0' max='300.0' step='0.2313874' oninput='paramFlickerFrequency(this)'></input></td>
+                        <td><input type='range' min='1.0' max='50.0' step='0.2313874' id='flickerFrequency' oninput='paramFlickerFrequency(this)'></input></td>
                     </tr>
                     
                     <tr>
                         <td>Strength</td>
-                        <td><input type='range' min='0.0' max='1.0' step='0.01' oninput='paramFlickerOffset(this)'></input></td>
+                        <td><input type='range' min='0.0' max='1.0' step='0.0001' id='flickerStrength' oninput='paramFlickerStrength(this)'></input></td>
                     </tr>
                     
                     <tr><td colspan='2'><div class='separator'></div></td></tr>
