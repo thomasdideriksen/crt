@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+
+<html>
+
+    <head>
+        <meta charset='UTF-8'>
+        <link href="https://fonts.googleapis.com/css?family=Open+Sans+Condensed:300,700" rel="stylesheet">
+        <title>Shader</title>
+           
+        <script type='x-shader/x-vertex' id='vertexShader'>
+            attribute vec4 PositionTexCoord;
+            varying vec2 TexCoord;
+            uniform mat3 Matrix;
+            void main(void) {
+                TexCoord = PositionTexCoord.zw;
+                vec3 pos = Matrix * vec3(PositionTexCoord.xy, 1.0);
+                gl_Position = vec4(pos.xy, 0.0, 1.0);
+            }
+        </script>
+                
+        <script type='x-shader/x-fragment' id='fragmentShader'>
+            precision mediump float;
+            uniform sampler2D Texture;
+            uniform sampler2D Aperture;
+            varying vec2 TexCoord;
+            uniform vec4 distCoeffs;
+            uniform bool Bypass;
+            uniform float Time;
+            
+            vec2 distort(float dx, float dy, float dist, float k1, float k2, float k3, float scale) {
+                float dist2 = dist * dist;
+                float dist4 = dist2 * dist2;
+                float dist6 = dist4 * dist2;
+                float coeff = (1.0 + k1 * dist2 + k2 * dist4 + k3 * dist6) * scale;
+                return vec2(dx * coeff + 0.5, dy * coeff + 0.5);
+            }
+           
+            void main(void) {
+            
+                if (Bypass) {
+                    gl_FragColor = texture2D(Texture, TexCoord);
+                    return;
+                }
+            
+                // Compute distance from center
+                float dx = TexCoord.x - 0.5;
+                float dy = TexCoord.y - 0.5;
+                float dist = sqrt(dx * dx + dy * dy);
+                
+                // Get distortion coefficients + scale
+                float k1 = distCoeffs.x;
+                float k2 = distCoeffs.y;
+                float k3 = distCoeffs.z;
+                float scale = distCoeffs.w;
+                
+                // Sample R, G and B in different locations to simulate color-fringing near the edges
+                vec2 uvR = distort(dx, dy, dist, k1 + 0.08 * dist, k2, k3, scale);
+                vec4 imR = texture2D(Texture, uvR);
+                
+                vec2 uvG = distort(dx, dy, dist, k1, k2, k3, scale);
+                vec4 imG = texture2D(Texture, uvG);
+                
+                vec2 uvB = distort(dx, dy, dist, k1 - 0.05 * dist, k2, k3, scale);
+                vec4 imB = texture2D(Texture, uvB);
+                
+                // Combine the three image samples
+                vec4 im = vec4(imR.r, imG.g, imB.b, 1.0);
+                
+                // Get hexagonal aperture grill texture and composite it ontop of the image
+                vec2 uv = TexCoord * vec2(10.0, 6.0);
+                vec4 ap = texture2D(Aperture, uv);
+                float alpha = ap.a * 0.35;
+                vec4 res = im * (1.0 - alpha) + ap * alpha;
+                
+                // Simulate brightness falloff near edges (vignetting)
+                float darken = 1.0 - clamp(dist * 1.3, 0.0, 1.0);
+                res = vec4(res.rgb * vec3(darken) * vec3(1.5), 1.0);
+                
+               
+                res = vec4(vec3(res.rgb * Time), 1.0);
+                
+                
+                gl_FragColor = res;
+            }
+        </script>
+        
+        <script src='Mat3.js'></script>
+        <script src='GL.js'></script>
+        
+        <script>
+        
+            'use strict';
+            
+            var _renderPending;
+            var _cvs, _gl, _program, _matrix, _texture, _apertureTex, _videoTexture, _video;
+            var _params;
+        
+            function init() {
+            
+            
+                _params = {
+                    distortionPrimary: 0.19,
+                    distortionSecondary: 0.11,
+                    distortionScale: 0.91,
+                    
+                    shadowMaskAlpha: 0.35,
+                    shadowMaskScale: 10.0,
+                    
+                    brightnessFalloffStrength: 1.3,
+                    brightnessFalloffRadius: 1.0,
+                    
+                    colorFringingRed: 0.08,
+                    colorFringingBlue: -0.05,
+                    
+                    flickerDelay: 32.080362, 
+                    flickerOffset: 0.08,
+                }
+            
+                _cvs = document.getElementById('canvas');
+                console.log(_cvs);
+                console.log(_cvs.getContext);
+                
+                _gl = _cvs.getContext('webgl');
+                console.log(_gl);
+                
+                var gl = _gl;
+                gl.clearColor(0, 0, 0, 1);
+                var vertexShader = document.getElementById('vertexShader').innerText;
+                var fragmentShader = document.getElementById('fragmentShader').innerText;
+                _program = new GL.Program(gl, vertexShader, fragmentShader);
+                _program.use();
+                
+                var quad = GL.makeQuad(0, 0, 1, 1, 1, 1);
+                var buffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(quad), gl.STATIC_DRAW);
+                
+                var bufferLocation = _program.getAttributeLocation('PositionTexCoord');
+                gl.enableVertexAttribArray(bufferLocation); // Note: This operates on the currently bound ARRAY_BUFFER
+                gl.vertexAttribPointer(bufferLocation, 4, gl.FLOAT, false, 0, 0);
+                
+                var im = new Image();
+                im.onload = function() {
+                    
+                    _apertureTex = createTexture(im, gl.REPEAT, true);
+                    
+                    var video = document.createElement('video');
+                    video.addEventListener('canplaythrough', function() {
+                        video.play();
+                        _video = video;
+                        _texture = createEmptyTexture();
+                        _texture.width = video.videoWidth;
+                        _texture.height = video.videoHeight;
+                        
+                        window.addEventListener('resize', resize);
+                        resize();
+                        
+                        requestAnimationFrame(render);
+                        
+                    }, true);
+                    video.preload = 'auto';
+                    video.loop = true;
+                    //video.src = 'media/video1.mp4';
+                    //video.src = 'media/hsf2a.mp4';
+                    //video.src = 'media/hsf2d.mp4';
+                    //video.src = 'media/hsf2j.mp4';
+                    //video.src = 'media/hsf2j1.mp4';
+                    video.src = 'media/shocktr2.mp4';
+                }
+                im.src = 'graphics/aperture.png';
+                
+                // Default distortion values
+                var k1 = 0.19;
+                var k2 = 0.11;
+                var k3 = 0;
+                var scale = 0.91;
+                var idx = 0;
+                var delta = 0.01;
+                _program.setUniform4f('distCoeffs', k1, k2, k3, scale);               
+            }
+            
+            function createEmptyTexture() {
+                var gl = _gl;
+                var tex = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                gl.bindTexture(gl.TEXTURE_2D, null);
+                return tex;
+            }
+            
+            function createTexture(im, wrap, mipmap) {
+                var gl = _gl;
+                var tex = gl.createTexture();
+                tex.width = im.width;
+                tex.height = im.height;
+
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, im);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                
+                var minFilter = gl.LINEAR;
+                if (mipmap) {
+                    minFilter = gl.LINEAR_MIPMAP_LINEAR;
+                }
+                
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minFilter);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
+                
+                if (mipmap) {
+                    gl.generateMipmap(gl.TEXTURE_2D);
+                }
+                
+                gl.bindTexture(gl.TEXTURE_2D, null);                
+                return tex;
+            }
+            
+            function placeOverlay() {
+                var rect = _cvs.parentNode.getBoundingClientRect();
+                var overlay = document.getElementById('overlay');
+                
+                var sx = rect.width / _video.videoWidth;
+                var sy = rect.height / _video.videoHeight;
+                var s = Math.min(sx, sy);
+                
+                var w = _video.videoWidth * s;
+                var h = _video.videoHeight * s;
+                
+                var t = (rect.height - h) * 0.5;
+                var l = (rect.width - w) * 0.5;
+                
+                w = Math.ceil(w);
+                h = Math.ceil(h);
+                t = Math.floor(t);
+                l = Math.floor(l);
+                
+                overlay.style.top = t + 'px';
+                overlay.style.left = l + 'px';
+                overlay.style.width = w + 'px';
+                overlay.style.height = h + 'px';
+            }
+            
+            function resize() {
+                var rect = _cvs.parentNode.getBoundingClientRect();
+                _cvs.width = rect.width;
+                _cvs.height = rect.height;
+                _gl.viewport(0, 0, rect.width, rect.height);
+                
+                var m0 = Mat3.makeScale(1, -1);
+                var m1 = Mat3.makeTranslation(-1, -1);
+                var m2 = Mat3.makeScale(2 / rect.width, 2 / rect.height);
+                
+                var m3 = Mat3.makeScale(_texture.width, _texture.height);
+                var sx = rect.width / _texture.width;
+                var sy = rect.height / _texture.height;
+                var s = Math.min(sx, sy);
+                var m4 = Mat3.makeScale(s, s);
+                
+                var tx = (rect.width - _texture.width * s) * 0.5;
+                var ty = (rect.height - _texture.height * s) * 0.5;
+                var m5 = Mat3.makeTranslation(tx, ty);
+                
+                _matrix= Mat3.multiply(m0, m1, m2, m5, m3, m4);
+                
+                placeOverlay();
+            }
+            
+            var _frame = 0;
+            function render() {
+                var gl = _gl;
+                gl.clear(gl.COLOR_BUFFER_BIT);
+                
+                gl.bindTexture(gl.TEXTURE_2D, _texture);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, _video);
+                
+                _frame++;
+                var t = _frame * (1.0 / 60.0) * 1000.0;
+                var delay = _params.flickerDelay;
+                var offset = _params.flickerOffset;
+                var dt = t - (Math.floor(t / delay) * delay)
+                dt /= delay;
+                
+                dt = dt * offset;
+                dt += (1.0 - offset);
+                
+                _program.setUniform1f('Time', dt);
+                
+                gl.activeTexture(gl.TEXTURE1);
+                gl.bindTexture(gl.TEXTURE_2D, _apertureTex);
+                _program.setUniform1i('Aperture', 1);
+                
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, _texture);
+                _program.setUniform1i('Texture', 0);
+                
+                _program.setUniformMatrix3fv('Matrix', _matrix);
+                 gl.drawArrays(gl.TRIANGLES, 0, 6);
+                 
+                 requestAnimationFrame(render);
+            }
+            
+            function paramBypass(e) {
+                _program.setUniform1i('Bypass', e.checked);
+                var gl = _gl;
+                var filter = e.checked ? gl.NEAREST : gl.LINEAR;
+                gl.bindTexture(gl.TEXTURE_2D, _texture);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+                var overlay = document.getElementById('overlay');
+                if (!e.checked) {
+                    overlay.style.display = 'block';
+                } else {
+                    overlay.style.display = 'none';
+                }
+            }
+            
+            function paramFlickerOffset(e) {
+                _params.flickerOffset = parseFloat(e.value);
+            }
+            
+            function paramFlickerFrequency(e) {
+                _params.flickerDelay = parseFloat(e.value);
+            }
+        
+        </script>
+        
+         <style>
+            html, body {
+                width: 100%;
+                height: 100%;
+                margin: 0px;
+                padding: 0px;
+                background: #303030;
+                overflow: hidden;
+                font-family: Open Sans Condensed;
+                font-weight: 300;
+                color: #ffffff;
+                font-size: 16px;
+                text-transform: uppercase;
+                
+            }
+            #canvas {
+                margin: 0px;
+                padding: 0px;
+            }
+            .separator {
+                border: solid; 
+                border-width: 1px 0px 0px 0px; 
+                border-color: #ffffff; 
+                margin: 4px 0px 8px 0px
+            }
+            .groupHeader {
+                font-weight: 700;
+                font-size: 18px;
+            }
+            input[type=range] {
+                width: 100%;
+            }
+            tr td:first-child{
+                width:30%;
+                white-space:nowrap;
+            }
+        </style>
+        
+    </head>
+    
+    <body onload='init()'>
+        <div style='display: flex; height: 100%; width: 100%'>
+            <div style='flex: 1 1 auto; overflow: hidden'>
+                <svg id='overlay' preserveAspectRatio='none' viewBox='54.88039 62.417428 641.156 378.046' style='position: absolute;'>
+                    <path
+                        style="opacity:1.0;fill:#000000;fill-opacity:1;fill-rule:evenodd;stroke:none"
+                        d="m 54.88039,62.417428 0,378.046222 641.15566,0 0,-378.046222 z m 320.57783,3.786331 c 212.48018,0 289.19851,6.303576 289.19851,6.303576 11.203,1.320058 17.81124,9.179095 19.94493,19.789821 0,0 8.40431,30.453284 8.40431,159.143034 0,128.68974 -8.40431,159.14302 -8.40431,159.14302 -2.42408,10.96355 -9.50997,18.86815 -19.94493,19.78982 0,0 -76.71833,6.30361 -289.19851,6.30361 -212.48018,0 -289.198506,-6.30361 -289.198506,-6.30361 -10.451769,-1.47363 -17.720073,-8.82627 -19.94494,-19.78982 0,0 -8.405016,-30.45328 -8.405016,-159.14302 0,-128.68975 8.405016,-159.143034 8.405016,-159.143034 1.689719,-10.809917 9.140346,-17.872159 19.94494,-19.789821 0,0 76.718326,-6.303576 289.198506,-6.303576 z"/>
+                </svg>
+                <canvas id='canvas'></canvas>
+                
+            </div>
+            <div style='flex: 0 0 300px; overflow: hidden; padding: 8px; margin: 0px;'>
+                <table style='width: 100%'>
+                    <tr>
+                        <td>Bypass</td>
+                        <td><input type='checkbox' onchange='paramBypass(this)'></input></td>
+                    </tr>
+                    
+                    <tr><td colspan='2'><div class='separator'></div></td></tr>                    
+                    <tr><td colspan='2'><div class='groupHeader'>Distortion</div></td></tr>
+                    
+                    <tr>
+                        <td>Primary</td>
+                        <td><input type='range' oninput='paramDistortionPrimary(this)'></input></td>
+                    </tr>
+                    <tr>
+                        <td>Secondary</td>
+                        <td><input type='range' oninput='paramDistortionSecondary(this)'></input></td>
+                    </tr>
+                    <tr>
+                        <td>Scale</td>
+                        <td><input type='range' oninput='paramDistortionScale(this)'></input></td>
+                    </tr>
+                    
+                    <tr><td colspan='2'><div class='separator'></div></td></tr>                    
+                    <tr><td colspan='2'><div class='groupHeader'>Shadow Mask</div></td></tr>
+                    
+                    <tr>
+                        <td>Alpha</td>
+                        <td><input type='range' oninput='paramShadowMaskAlpha(this)'></input></td>
+                    </tr>
+                    
+                    <tr>
+                        <td>Scale</td>
+                        <td><input type='range' oninput='paramShadowMaskScale(this)'></input></td>
+                    </tr>
+                    
+                    <tr><td colspan='2'><div class='separator'></div></td></tr>
+                    <tr><td colspan='2'><div class='groupHeader'>Brightness Falloff</div></td></tr>
+                    
+                    <tr>
+                        <td>Strength</td>
+                        <td><input type='range' oninput='paramFalloffStrength(this)'></input></td>
+                    </tr>
+                    
+                    <tr>
+                        <td>Radius</td>
+                        <td><input type='range' oninput='paramFalloffRadius(this)'></input></td>
+                    </tr>
+                    
+                    
+                    <tr><td colspan='2'><div class='separator'></div></td></tr>
+                    <tr><td colspan='2'><div class='groupHeader'>Color Fringing</div></td></tr>
+                    
+                     <tr>
+                        <td>Red Channel</td>
+                        <td><input type='range' oninput='paramFringingRed(this)'></input></td>
+                    </tr>
+                    
+                    <tr>
+                        <td>Blue Channel</td>
+                        <td><input type='range' oninput='paramFringingBlue(this)'></input></td>
+                    </tr>
+                    
+                    <tr><td colspan='2'><div class='separator'></div></td></tr>
+                    <tr><td colspan='2'><div class='groupHeader'>Flickering</div></td></tr>
+                    
+                    <tr>
+                        <td>Frequency</td>
+                        <td><input type='range' min='2.0' max='300.0' step='0.2313874' oninput='paramFlickerFrequency(this)'></input></td>
+                    </tr>
+                    
+                    <tr>
+                        <td>Strength</td>
+                        <td><input type='range' min='0.0' max='1.0' step='0.01' oninput='paramFlickerOffset(this)'></input></td>
+                    </tr>
+                    
+                    <tr><td colspan='2'><div class='separator'></div></td></tr>
+                    
+                </table>
+                <div>
+                    <button onclick='_video.play()'>play</button>
+                    <button onclick='_video.pause()'>pause</button>
+                </div>
+            </div>
+        </div>
+    </body>
+
+</html>
