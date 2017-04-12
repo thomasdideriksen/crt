@@ -25,17 +25,21 @@
             varying vec2 TexCoord;
             uniform vec4 DistortionCoeffs;
             uniform bool Bypass;
-            uniform float Time;
+            uniform float Flicker;
             uniform vec3 ColorFringing;
             uniform vec3 ShadowMask;
             uniform vec2 Falloff;
+            uniform float Scroll;
             
             vec2 distort(float dx, float dy, float dist, float k1, float k2, float k3, float scale) {
                 float dist2 = dist * dist;
                 float dist4 = dist2 * dist2;
                 float dist6 = dist4 * dist2;
                 float coeff = (1.0 + k1 * dist2 + k2 * dist4 + k3 * dist6) * (1.0 / scale);
-                return vec2(dx * coeff + 0.5, dy * coeff + 0.5);
+                vec2 res = vec2(dx * coeff + 0.5, dy * coeff + 0.5);
+                res.y += Scroll;
+                res.y -= floor(res.y);
+                return res;
             }
            
             void main(void) {
@@ -44,7 +48,7 @@
                     gl_FragColor = texture2D(Texture, TexCoord);
                     return;
                 }
-            
+               
                 // Compute distance from center
                 float dx = TexCoord.x - 0.5;
                 float dy = TexCoord.y - 0.5;
@@ -57,7 +61,7 @@
                 float scale = DistortionCoeffs.w;
                 
                 // Sample R, G and B in different locations to simulate color-fringing near the edges
-                vec2 uvR = distort(dx, dy, dist, k1 + ColorFringing.r * dist, k2, k3, scale);
+                vec2 uvR = distort(dx, dy, dist, k1 + ColorFringing.r * dist, k2, k3, scale);                
                 vec4 imR = texture2D(Texture, uvR);
                 
                 vec2 uvG = distort(dx, dy, dist, k1 + ColorFringing.g * dist, k2, k3, scale);
@@ -80,26 +84,32 @@
                 res = vec4(res.rgb * vec3(darken) * vec3(Falloff.y), 1.0);
                 
                
-                res = vec4(vec3(res.rgb * Time), 1.0);
-                
+                res = vec4(vec3(res.rgb * Flicker), 1.0);
                 
                 gl_FragColor = res;
+                
+                
+                
+                
             }
         </script>
         
         <script src='Mat3.js'></script>
         <script src='GL.js'></script>
+        <script src='Animator.js'></script>
         
         <script>
         
             'use strict';
             
             var _renderPending;
-            var _cvs, _gl, _program, _matrix, _texture, _apertureTex, _videoTexture, _video;
-            var _params;
+            var _cvs, _gl, _program, _matrix, _texture, _apertureTex, _videoTexture, _video, _animator;
+            var _params, _verticalScrollTimeout;
         
             function init() {
             
+                _animator = new Animator();
+                _animator.set('Scroll', 0.0);
             
                 _params = {
                 
@@ -118,6 +128,10 @@
                     
                     flickerFrequency: 29.9234, 
                     flickerStrength: 0.0907,
+                    
+                    verticalScrollEnabled: true,
+                    verticalScrollMinTimeBetweenMs: 10000,
+                    verticalScrollMaxTimeBetweenMs: 15000,
                 }
                 
                 updateUI();
@@ -157,6 +171,7 @@
                         window.addEventListener('resize', resize);
                         resize();
                         
+                        scheduleNextVerticalScroll();
                         requestAnimationFrame(render);
                         
                     }, true);
@@ -167,14 +182,41 @@
                     //video.src = 'media/hsf2d.mp4';
                     //video.src = 'media/hsf2j.mp4';
                     //video.src = 'media/hsf2j1.mp4';
-                    //video.src = 'media/shocktr2.mp4';
+                    video.src = 'media/shocktr2.mp4';
                     //video.src = 'media/kf2k3pcb.mp4';
                     //video.src = 'media/kinst.mp4';
                     //video.src = 'media/kof99.mp4';
-                    video.src = 'media/fatfury3.mp4';
+                    //video.src = 'media/fatfury3.mp4';
                     //video.src = 'media/daraku.mp4';
+                    //video.src = 'media/wakuwaku7.mp4';
                 }
                 im.src = 'graphics/aperture.png';
+            }
+            
+            function scheduleNextVerticalScroll() {
+                
+                if (_params.verticalScrollEnabled) {
+                    
+                    var min = _params.verticalScrollMinTimeBetweenMs;
+                    var max = _params.verticalScrollMaxTimeBetweenMs;
+                    var delay = min + (max - min) * Math.random();
+                    
+                    clearTimeout(_verticalScrollTimeout);
+                    
+                    _verticalScrollTimeout = setTimeout(function() {
+                        scroll();
+                        
+                        if (Math.random() > 0.5) {
+                            setTimeout(function() {
+                                scroll();
+                                scheduleNextVerticalScroll();
+                            }, 180 + Math.random() * 200);
+                        } else {
+                            scheduleNextVerticalScroll();
+                        }
+                        
+                    }, delay);
+                }
             }
             
             function updateUI() {
@@ -294,7 +336,8 @@
                 dt = dt * offset;
                 dt += (1.0 - offset);
                 
-                _program.setUniform1f('Time', dt);
+                _program.setUniform1f('Scroll', _animator.get('Scroll'));
+                _program.setUniform1f('Flicker', dt);
                 
                 _program.setUniform4f('DistortionCoeffs', _params.distortionPrimary, _params.distortionSecondary, 0.0, _params.distortionScale);
                 _program.setUniform3f('ColorFringing', _params.colorFringingRed, 0.0, _params.colorFringingBlue);
@@ -338,6 +381,10 @@
                 } else {
                     _video.pause();
                 }
+            }
+            
+            function scroll() {
+                _animator.start('Scroll', 0, 1, 200);
             }
             
             function paramFlickerStrength(e) {
@@ -429,6 +476,7 @@
                 text-align: center;
                 transition: background 0.3s ease-out;
                 cursor: pointer;
+                margin-bottom: 8px;
                 -webkit-touch-callout: none; /* iOS Safari */
                 -webkit-user-select: none; /* Safari */
                 -khtml-user-select: none; /* Konqueror HTML */
@@ -538,6 +586,9 @@
                 </table>
                 <div class='button' onclick='playPause()'>
                     Play/Pause
+                </div>
+                <div class='button' onclick='scroll()'>
+                    Force Vertical Scroll
                 </div>
             </div>
         </div>
