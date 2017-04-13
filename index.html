@@ -128,7 +128,7 @@
                     colorFringingRed: 0.08,
                     colorFringingBlue: -0.05,
                     
-                    flickerFrequency: 29.9234, 
+                    flickerFrequency: 40.0,
                     flickerStrength: 0.0907,
                     
                     vsyncEnabled: true,
@@ -329,17 +329,14 @@
                 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, _video);
                 
                 _frame++;
-                var t = _frame * (1.0 / 60.0) * 1000.0;
-                var delay = (1.0 / _params.flickerFrequency) * 1000.0;
+                var count = Math.round((1.0 / _params.flickerFrequency) * 100);
+                var dt = (_frame % count) / count
                 var offset = _params.flickerStrength;
-                var dt = t - (Math.floor(t / delay) * delay)
-                dt /= delay;
-                
                 dt = dt * offset;
                 dt += (1.0 - offset);
                 
-                _program.setUniform2f('Vsync', _animator.get('VsyncScroll'), _animator.get('VsyncBlackBar'));
                 _program.setUniform1f('Flicker', dt);
+                _program.setUniform2f('Vsync', _animator.get('VsyncScroll'), _animator.get('VsyncBlackBar'));
                 
                 _program.setUniform4f('DistortionCoeffs', _params.distortionPrimary, _params.distortionSecondary, 0.0, _params.distortionScale);
                 _program.setUniform3f('ColorFringing', _params.colorFringingRed, 0.0, _params.colorFringingBlue);
@@ -598,7 +595,7 @@
                     
                     <tr>
                         <td>Frequency</td>
-                        <td><input type='range' min='1.0' max='50.0' step='0.2313874' id='flickerFrequency' oninput='paramFlickerFrequency(this)'></input></td>
+                        <td><input type='range' min='10.0' max='60.0' step='1' id='flickerFrequency' oninput='paramFlickerFrequency(this)'></input></td>
                     </tr>
                     
                     <tr>
