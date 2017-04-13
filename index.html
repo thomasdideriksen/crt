@@ -29,7 +29,7 @@
             uniform vec3 ColorFringing;
             uniform vec3 ShadowMask;
             uniform vec2 Falloff;
-            uniform float Scroll;
+            uniform vec2 Vsync;
             
             vec2 distort(float dx, float dy, float dist, float k1, float k2, float k3, float scale) {
                 float dist2 = dist * dist;
@@ -37,11 +37,15 @@
                 float dist6 = dist4 * dist2;
                 float coeff = (1.0 + k1 * dist2 + k2 * dist4 + k3 * dist6) * (1.0 / scale);
                 vec2 res = vec2(dx * coeff + 0.5, dy * coeff + 0.5);
-                res.y += Scroll;
+                res.y += Vsync.x;
                 res.y -= floor(res.y);
                 return res;
             }
-           
+            
+            float sigmoid(float t, float narrowness, float offset) {
+                return 1.0 / (1.0 + exp(-(t - offset) * narrowness));
+            }
+
             void main(void) {
             
                 if (Bypass) {
@@ -73,6 +77,9 @@
                 // Combine the three image samples
                 vec4 im = vec4(imR.r, imG.g, imB.b, 1.0);
                 
+                float s = sigmoid(uvG.y, 1000.0, Vsync.y);
+                im.rgb *= vec3(s);
+                                
                 // Get hexagonal aperture grill texture and composite it ontop of the image
                 vec2 uv = TexCoord * ShadowMask.xy;
                 vec4 ap = texture2D(Aperture, uv);
@@ -83,14 +90,8 @@
                 float darken = 1.0 - clamp(dist * Falloff.x, 0.0, 1.0);
                 res = vec4(res.rgb * vec3(darken) * vec3(Falloff.y), 1.0);
                 
-               
-                res = vec4(vec3(res.rgb * Flicker), 1.0);
-                
-                gl_FragColor = res;
-                
-                
-                
-                
+                // Assign output
+                gl_FragColor = vec4(vec3(res.rgb * Flicker), 1.0);
             }
         </script>
         
@@ -104,12 +105,13 @@
             
             var _renderPending;
             var _cvs, _gl, _program, _matrix, _texture, _apertureTex, _videoTexture, _video, _animator;
-            var _params, _verticalScrollTimeout;
+            var _params, _vsyncLossTimeout;
         
             function init() {
             
                 _animator = new Animator();
-                _animator.set('Scroll', 0.0);
+                _animator.set('VsyncScroll', 0.0);
+                _animator.set('VsyncBlackBar', -0.1);
             
                 _params = {
                 
@@ -129,14 +131,14 @@
                     flickerFrequency: 29.9234, 
                     flickerStrength: 0.0907,
                     
-                    verticalScrollEnabled: true,
-                    verticalScrollMinTimeBetweenMs: 10000,
-                    verticalScrollMaxTimeBetweenMs: 15000,
+                    vsyncEnabled: true,
+                    vsyncFrequency: 0.1,
+                    vsyncRandomness: 5000,
                 }
                 
                 updateUI();
             
-                _cvs = document.getElementById('canvas');                
+                _cvs = document.getElementById('canvas');
                 _gl = _cvs.getContext('webgl');
                 
                 var gl = _gl;
@@ -171,7 +173,7 @@
                         window.addEventListener('resize', resize);
                         resize();
                         
-                        scheduleNextVerticalScroll();
+                        scheduleNextVsyncLoss();
                         requestAnimationFrame(render);
                         
                     }, true);
@@ -193,29 +195,30 @@
                 im.src = 'graphics/aperture.png';
             }
             
-            function scheduleNextVerticalScroll() {
+            function scheduleNextVsyncLoss() {
                 
-                if (_params.verticalScrollEnabled) {
+                clearTimeout(_vsyncLossTimeout);
+                
+                if (_params.vsyncEnabled) {
                     
-                    var min = _params.verticalScrollMinTimeBetweenMs;
-                    var max = _params.verticalScrollMaxTimeBetweenMs;
-                    var delay = min + (max - min) * Math.random();
+                    var delayMs = (1.0 / _params.vsyncFrequency) * 1000.0;
+                    delayMs += (Math.random() - 0.5) * _params.vsyncRandomness;
+                    delayMs = Math.max(0, delayMs);
+                    console.log(delayMs)
                     
-                    clearTimeout(_verticalScrollTimeout);
-                    
-                    _verticalScrollTimeout = setTimeout(function() {
-                        scroll();
+                    _vsyncLossTimeout = setTimeout(function() {
+                        simulateVsyncLoss();
                         
                         if (Math.random() > 0.5) {
                             setTimeout(function() {
-                                scroll();
-                                scheduleNextVerticalScroll();
+                                simulateVsyncLoss();
+                                scheduleNextVsyncLoss();
                             }, 180 + Math.random() * 200);
                         } else {
-                            scheduleNextVerticalScroll();
+                            scheduleNextVsyncLoss();
                         }
                         
-                    }, delay);
+                    }, delayMs);
                 }
             }
             
@@ -282,8 +285,8 @@
                 var t = (rect.height - h) * 0.5;
                 var l = (rect.width - w) * 0.5;
                 
-                w = Math.ceil(w);
-                h = Math.ceil(h);
+                w = Math.ceil(w) + 1;
+                h = Math.ceil(h) + 1;
                 t = Math.floor(t);
                 l = Math.floor(l);
                 
@@ -336,7 +339,7 @@
                 dt = dt * offset;
                 dt += (1.0 - offset);
                 
-                _program.setUniform1f('Scroll', _animator.get('Scroll'));
+                _program.setUniform2f('Vsync', _animator.get('VsyncScroll'), _animator.get('VsyncBlackBar'));
                 _program.setUniform1f('Flicker', dt);
                 
                 _program.setUniform4f('DistortionCoeffs', _params.distortionPrimary, _params.distortionSecondary, 0.0, _params.distortionScale);
@@ -383,8 +386,10 @@
                 }
             }
             
-            function scroll() {
-                _animator.start('Scroll', 0, 1, 200);
+            function simulateVsyncLoss() {
+                var duration = 250;
+                _animator.start('VsyncScroll', 0, 1, duration);
+                _animator.start('VsyncBlackBar', 1, -0.1, duration);
             }
             
             function paramFlickerStrength(e) {
@@ -429,6 +434,21 @@
             
             function paramFalloffRadius(e) {
                 _params.brightnessFalloffRadius = parseFloat(e.value);
+            }
+            
+            function paramVsyncFrequency(e) {
+                _params.vsyncFrequency = parseFloat(e.value);
+                scheduleNextVsyncLoss();
+            }
+        
+            function paramVsyncRandomness(e) {
+                _params.vsyncRandomness = parseFloat(e.value);
+                scheduleNextVsyncLoss();
+            }
+            
+            function paramVsyncEnabled(e) {
+                _params.vsyncEnabled = e.checked;
+                scheduleNextVsyncLoss();
             }
         
         </script>
@@ -507,6 +527,13 @@
             </div>
             <div style='flex: 0 0 300px; overflow: hidden; padding: 8px; margin: 0px;'>
                 <table style='width: 100%'>
+                    
+                    <tr>
+                        <td colspan='2'>
+                            <div class='button' onclick='playPause()'>Play/Pause</div>
+                        </td>
+                    </tr>
+                    
                     <tr>
                         <td>Bypass</td>
                         <td><input type='checkbox' onchange='paramBypass(this)'></input></td>
@@ -554,7 +581,6 @@
                         <td><input type='range' id='brightnessFalloffRadius' min='0.5' max='3.5' step='0.01' oninput='paramFalloffRadius(this)'></input></td>
                     </tr>
                     
-                    
                     <tr><td colspan='2'><div class='separator'></div></td></tr>
                     <tr><td colspan='2'><div class='groupHeader'>Color Fringing</div></td></tr>
                     
@@ -582,14 +608,33 @@
                     </tr>
                     
                     <tr><td colspan='2'><div class='separator'></div></td></tr>
+                    <tr><td colspan='2'><div class='groupHeader'>VSYNC loss</div></td></tr>
+                    
+                    <tr>
+                        <td>Enable</td>
+                        <td><input type='checkbox' onchange='paramVsyncEnabled(this)' checked></input></td>
+                    </tr>
+                    
+                    <tr>
+                        <td>Frequency</td>
+                        <td><input type='range' min='0.01' max='2.0' step='0.01' id='vsyncFrequency' onchange='paramVsyncFrequency(this)'></input></td>
+                    </tr>
+                    
+                    <tr>
+                        <td>Randomness</td>
+                        <td><input type='range' min='0.0' max='30000.0' step='10.0' id='vsyncRandomness' onchange='paramVsyncRandomness(this)'></input></td>
+                    </tr>
+                    
+                    <tr><td colspan='2'>
+                        <div class='button' onclick='simulateVsyncLoss()'>
+                            Force VSYNC loss
+                        </div>
+                    </td></tr>
+                    
+                    <tr><td colspan='2'><div class='separator'></div></td></tr>
                     
                 </table>
-                <div class='button' onclick='playPause()'>
-                    Play/Pause
-                </div>
-                <div class='button' onclick='scroll()'>
-                    Force Vertical Scroll
-                </div>
+                
             </div>
         </div>
     </body>
