@@ -204,7 +204,6 @@
                     var delayMs = (1.0 / _params.vsyncFrequency) * 1000.0;
                     delayMs += (Math.random() - 0.5) * _params.vsyncRandomness;
                     delayMs = Math.max(0, delayMs);
-                    console.log(delayMs)
                     
                     _vsyncLossTimeout = setTimeout(function() {
                         simulateVsyncLoss();
